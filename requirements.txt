@@ -1,0 +1,9 @@
+﻿fastapi
+uvicorn[standard]
+mysql-connector-python
+pandas
+numpy
+scikit-learn
+jinja2
+python-multipart
+xgboost

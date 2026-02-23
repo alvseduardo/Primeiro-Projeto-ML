@@ -1,0 +1,610 @@
+﻿<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Projeto ML | Precificação Inteligente</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=20260223" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Osmar Nicolini Comércio e Distribuição S/A</p>
+      <h1>Precificação inteligente</h1>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel form-panel">
+      <h2>Consulta</h2>
+      <form method="post" action="/analyze" id="analyzeForm">
+        <label>
+          Produto
+          <input
+            type="text"
+            id="productInput"
+            name="product_query"
+            placeholder="Digite código ou descrição"
+            list="productOptions"
+            value="{{ selected_display if selected_display is not none else '' }}"
+            required
+          >
+          <input type="hidden" name="codigoint" id="productCode" value="{{ selected.codigoint if selected and selected.codigoint is not none else '' }}">
+          <datalist id="productOptions">
+            {% for p in products %}
+              <option value="{{ p.descricao }} ({{ p.codigoint }})"></option>
+            {% endfor %}
+          </datalist>
+          <small>Digite código ou descrição e selecione um item da lista.</small>
+        </label>
+
+        <div class="grid-2">
+          <label>
+            Período do modelo
+            <input
+              type="text"
+              value="{% if result and result.period_window_days %}Últimos {{ result.period_window_days }} dias ({{ result.period_start_date }} a {{ result.period_end_date }}){% else %}Calculado automaticamente{% endif %}"
+              readonly
+            >
+          </label>
+        </div>
+
+        <label>
+          Lojas
+          <select name="stores" multiple>
+            <option value="ALL" {% if selected and 'ALL' in selected.stores %}selected{% endif %}>Todas</option>
+            {% for store in stores %}
+              <option value="{{ store }}" {% if selected and store in selected.stores %}selected{% endif %}>{{ store }}</option>
+            {% endfor %}
+          </select>
+          <small>Segure Ctrl/Command para múltiplas lojas.</small>
+        </label>
+
+        <label>
+          Preço desejado (opcional)
+          <input type="text" name="custom_price" placeholder="Ex: 12,90" value="{{ selected.custom_price if selected and selected.custom_price is not none else '' }}">
+        </label>
+
+        <button type="submit">Gerar previsões</button>
+      </form>
+    </section>
+
+    <section class="panel result-panel">
+      <h2>Dashboard</h2>
+      {% if result %}
+        {% set store_label = '—' %}
+        {% if selected and selected.stores %}
+          {% if 'ALL' in selected.stores %}
+            {% set store_label = 'Todas' %}
+          {% else %}
+            {% set store_label = selected.stores | join(', ') %}
+          {% endif %}
+        {% endif %}
+        <p class="dashboard-meta">
+          Loja selecionada: {{ store_label }} · Produto selecionado: {{ selected_display or '—' }}
+        </p>
+      {% endif %}
+      {% if result %}
+        {% if result.message %}
+          <div class="empty-state">
+            <h3>Sem previsões</h3>
+            <p>{{ result.message }}</p>
+          </div>
+        {% else %}
+          <div class="cards">
+            <div class="card">
+              <span>Preço atual</span>
+              <strong>{{ result.current_price | round(2) }}</strong>
+              <small>
+                Margem:
+                {% if result.margin_current_pct is not none %}
+                  {{ result.margin_current_pct | round(1) }}%
+                {% else %}
+                  —
+                {% endif %}
+              </small>
+            </div>
+            <div class="card highlight">
+              <span>Preço sugerido</span>
+              {% if result.suggested_price is not none %}
+                <strong>{{ result.suggested_price | round(2) }}</strong>
+                <small>
+                  Margem:
+                  {% if result.margin_suggested_pct is not none %}
+                    {{ result.margin_suggested_pct | round(1) }}%
+                  {% else %}
+                    —
+                  {% endif %}
+                  {% if result.elasticity_suggested is not none %}
+                    · Elasticidade: {{ result.elasticity_suggested | round(2) }}
+                  {% else %}
+                    · Elasticidade: —
+                  {% endif %}
+                </small>
+              {% else %}
+                <strong>—</strong>
+                <small>Sem recomendação</small>
+              {% endif %}
+            </div>
+            <div class="card">
+              <span>Preço escolhido</span>
+              {% if result.custom_price %}
+                <strong>{{ result.custom_price | round(2) }}</strong>
+                <small>
+                  Margem:
+                  {% if result.margin_custom_pct is not none %}
+                    {{ result.margin_custom_pct | round(1) }}%
+                  {% else %}
+                    —
+                  {% endif %}
+                  {% if result.elasticity_custom is not none %}
+                    · Elasticidade: {{ result.elasticity_custom | round(2) }}
+                  {% else %}
+                    · Elasticidade: —
+                  {% endif %}
+                </small>
+              {% else %}
+                <strong>—</strong>
+                <small>Informe um preço</small>
+              {% endif %}
+            </div>
+          </div>
+
+          {% set base_promo_text = 'dia promocional' if result.model_mode == 'PROMO_DOMINANTE' else 'dia normal' %}
+          <div class="cards">
+            <div class="card-stack">
+              {% if result.show_base_forecast %}
+                <div class="card">
+                  <span>Venda prevista (30 dias) · {{ base_promo_text }} · preço atual</span>
+                  {% if result.qty_current_30d is not none %}
+                    <strong>{{ result.qty_current_30d_fmt or (result.qty_current_30d | round(0)) }}</strong>
+                    <small>
+                      Receita 30 dias:
+                      {% if result.revenue_current_30d_fmt %}
+                        {{ result.revenue_current_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                      <br>
+                      Lucro 30 dias:
+                      {% if result.profit_current_30d_fmt %}
+                        {{ result.profit_current_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </small>
+                  {% else %}
+                    <strong>—</strong>
+                    <small>Sem previsão</small>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if result.show_promo_block %}
+                <div class="card {% if result.show_base_forecast %}subcard{% endif %}">
+                  <span>Venda prevista (30 dias) · dia promocional · preço atual</span>
+                  {% if result.promo_scenario_current_qty_30d is not none %}
+                    <strong>{{ result.promo_scenario_current_qty_30d_fmt or (result.promo_scenario_current_qty_30d | round(0)) }}</strong>
+                    <small>
+                      Receita 30 dias:
+                      {% if result.promo_scenario_current_revenue_30d_fmt %}
+                        {{ result.promo_scenario_current_revenue_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                      <br>
+                      Lucro 30 dias:
+                      {% if result.promo_scenario_current_profit_30d_fmt %}
+                        {{ result.promo_scenario_current_profit_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </small>
+                  {% else %}
+                    <strong>—</strong>
+                    <small>Sem previsão</small>
+                  {% endif %}
+                </div>
+              {% endif %}
+            </div>
+            <div class="card-stack">
+              {% if result.show_base_forecast %}
+                <div class="card">
+                  <span>Venda prevista (30 dias) · {{ base_promo_text }} · preço sugerido</span>
+                  {% if result.qty_suggested_30d is not none %}
+                    <strong>{{ result.qty_suggested_30d_fmt or (result.qty_suggested_30d | round(0)) }}</strong>
+                    <small>
+                      Receita 30 dias:
+                      {% if result.revenue_suggested_30d_fmt %}
+                        {{ result.revenue_suggested_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                      <br>
+                      Lucro 30 dias:
+                      {% if result.profit_suggested_30d_fmt %}
+                        {{ result.profit_suggested_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </small>
+                  {% else %}
+                    <strong>—</strong>
+                    <small>Sem previsão</small>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if result.show_promo_block %}
+                <div class="card {% if result.show_base_forecast %}subcard{% endif %}">
+                  <span>Venda prevista (30 dias) · dia promocional · preço sugerido</span>
+                  {% if result.promo_scenario_suggested_qty_30d is not none %}
+                    <strong>{{ result.promo_scenario_suggested_qty_30d_fmt or (result.promo_scenario_suggested_qty_30d | round(0)) }}</strong>
+                    <small>
+                      Receita 30 dias:
+                      {% if result.promo_scenario_suggested_revenue_30d_fmt %}
+                        {{ result.promo_scenario_suggested_revenue_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                      <br>
+                      Lucro 30 dias:
+                      {% if result.promo_scenario_suggested_profit_30d_fmt %}
+                        {{ result.promo_scenario_suggested_profit_30d_fmt }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </small>
+                  {% else %}
+                    <strong>—</strong>
+                    <small>Sem previsão</small>
+                  {% endif %}
+                </div>
+              {% endif %}
+            </div>
+            <div class="card-stack">
+              {% if result.show_base_forecast %}
+                <div class="card">
+                  <span>Venda prevista (30 dias) · {{ base_promo_text }} · preço escolhido</span>
+                  {% if result.custom_price %}
+                    {% if result.qty_custom_30d is not none %}
+                      <strong>{{ result.qty_custom_30d_fmt or (result.qty_custom_30d | round(0)) }}</strong>
+                      <small>
+                        Receita 30 dias:
+                        {% if result.revenue_custom_30d_fmt %}
+                          {{ result.revenue_custom_30d_fmt }}
+                        {% else %}
+                          —
+                        {% endif %}
+                        <br>
+                        Lucro 30 dias:
+                        {% if result.profit_custom_30d_fmt %}
+                          {{ result.profit_custom_30d_fmt }}
+                        {% else %}
+                          —
+                        {% endif %}
+                      </small>
+                    {% else %}
+                      <strong>—</strong>
+                      <small>Sem previsão</small>
+                    {% endif %}
+                  {% else %}
+                    <strong>—</strong>
+                    <small>Informe um preço</small>
+                  {% endif %}
+                </div>
+              {% endif %}
+              {% if result.show_promo_block %}
+                <div class="card {% if result.show_base_forecast %}subcard{% endif %}">
+                  <span>Venda prevista (30 dias) · dia promocional · preço escolhido</span>
+                  {% if result.custom_price %}
+                    {% if result.promo_scenario_custom_qty_30d is not none %}
+                      <strong>{{ result.promo_scenario_custom_qty_30d_fmt or (result.promo_scenario_custom_qty_30d | round(0)) }}</strong>
+                      <small>
+                        Receita 30 dias:
+                        {% if result.promo_scenario_custom_revenue_30d_fmt %}
+                          {{ result.promo_scenario_custom_revenue_30d_fmt }}
+                        {% else %}
+                          —
+                        {% endif %}
+                        <br>
+                        Lucro 30 dias:
+                        {% if result.promo_scenario_custom_profit_30d_fmt %}
+                          {{ result.promo_scenario_custom_profit_30d_fmt }}
+                        {% else %}
+                          —
+                        {% endif %}
+                      </small>
+                    {% else %}
+                      <strong>—</strong>
+                      <small>Sem previsão</small>
+                    {% endif %}
+                  {% else %}
+                    <strong>—</strong>
+                    <small>Informe um preço</small>
+                  {% endif %}
+                </div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Histórico de vendas</h3>
+              <canvas id="qtyChart"></canvas>
+            </div>
+            <div class="chart-card">
+              <h3>Preço e custo unitário</h3>
+              <canvas id="priceChart"></canvas>
+            </div>
+          </div>
+
+          <div class="chart-grid">
+            <div class="chart-card">
+              <h3>Previsão de vendas (quantidade) · próximos 30 dias</h3>
+              <canvas id="forecastQtyChart"></canvas>
+            </div>
+          </div>
+
+          <div class="analysis">
+            <h3>Conclusão</h3>
+            {% if result.summary %}
+              <ul class="analysis-list">
+                {% for item in result.summary %}
+                  <li class="{% if loop.first %}highlight{% endif %}">{{ item }}</li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="analysis-muted">Sem conclusão disponível.</p>
+            {% endif %}
+          </div>
+
+          {% if result.warnings %}
+            <div class="analysis">
+              <h3>Avisos de estabilidade</h3>
+              <p class="analysis-muted">
+                O modelo detectou baixa estabilidade estatística. Recomendação deve ser analisada com cautela.
+              </p>
+              <ul class="analysis-list">
+                {% for warn in result.warnings %}
+                  <li><strong>{{ warn.title }}</strong><br>{{ warn.body }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+
+          <script type="application/json" id="chartData">
+            {{ {
+              "history_labels": result.history_labels,
+              "history_qty": result.history_qty,
+              "history_price": result.history_price,
+              "history_cost": result.history_cost,
+              "forecast_labels": result.forecast_labels,
+              "forecast_qty_current": result.forecast_qty_current,
+              "forecast_qty_suggested": result.forecast_qty_suggested,
+              "forecast_qty_custom": result.forecast_qty_custom,
+              "forecast_revenue_current": result.forecast_revenue_current,
+              "forecast_revenue_suggested": result.forecast_revenue_suggested,
+              "forecast_revenue_custom": result.forecast_revenue_custom
+            } | tojson }}
+          </script>
+          <script>
+            const chartDataEl = document.getElementById('chartData');
+            const chartData = chartDataEl ? JSON.parse(chartDataEl.textContent) : null;
+
+            if (chartData) {
+              const labels = chartData.history_labels;
+              const qtyData = chartData.history_qty;
+              const priceData = chartData.history_price;
+              const costData = chartData.history_cost;
+
+              new Chart(document.getElementById('qtyChart'), {
+                type: 'line',
+                data: {
+                  labels,
+                  datasets: [
+                    {
+                      label: 'Quantidade',
+                      data: qtyData,
+                      borderColor: '#2dd4bf',
+                      backgroundColor: 'rgba(45, 212, 191, 0.15)',
+                      fill: true,
+                      tension: 0.35
+                    }
+                  ]
+                },
+                options: {
+                  plugins: { legend: { display: false } },
+                  scales: {
+                    x: { grid: { display: false } },
+                    y: { grid: { color: 'rgba(148, 163, 184, 0.2)' } }
+                  }
+                }
+              });
+
+              new Chart(document.getElementById('priceChart'), {
+                type: 'line',
+                data: {
+                  labels,
+                  datasets: [
+                    {
+                      label: 'Preço unitário',
+                      data: priceData,
+                      borderColor: '#60a5fa',
+                      backgroundColor: 'rgba(96, 165, 250, 0.15)',
+                      fill: true,
+                      tension: 0.35
+                    },
+                    {
+                      label: 'Custo unitário',
+                      data: costData,
+                      borderColor: '#f97316',
+                      backgroundColor: 'rgba(249, 115, 22, 0.15)',
+                      fill: true,
+                      tension: 0.35
+                    }
+                  ]
+                },
+                options: {
+                  plugins: { legend: { position: 'bottom' } },
+                  scales: {
+                    x: { grid: { display: false } },
+                    y: { grid: { color: 'rgba(148, 163, 184, 0.2)' } }
+                  }
+                }
+              });
+
+              const forecastLabels = chartData.forecast_labels;
+              const forecastQtyCurrent = chartData.forecast_qty_current;
+              const forecastQtySuggested = chartData.forecast_qty_suggested;
+              const forecastQtyCustom = chartData.forecast_qty_custom;
+              const forecastRevenueCurrent = chartData.forecast_revenue_current;
+              const forecastRevenueSuggested = chartData.forecast_revenue_suggested;
+              const forecastRevenueCustom = chartData.forecast_revenue_custom;
+              const forecastRevenueSeries = [
+                forecastRevenueCurrent,
+                forecastRevenueSuggested,
+                forecastRevenueCustom
+              ];
+              const formatMoney = (value) => {
+                if (value === null || value === undefined) return '—';
+                return new Intl.NumberFormat('pt-BR', {
+                  style: 'currency',
+                  currency: 'BRL'
+                }).format(value);
+              };
+              const formatQty = (value) => {
+                if (value === null || value === undefined) return '—';
+                return new Intl.NumberFormat('pt-BR').format(value);
+              };
+
+              new Chart(document.getElementById('forecastQtyChart'), {
+                type: 'line',
+                data: {
+                  labels: forecastLabels,
+                  datasets: [
+                    {
+                      label: 'Preço atual',
+                      data: forecastQtyCurrent,
+                      borderColor: '#38bdf8',
+                      backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                      fill: false,
+                      tension: 0.35
+                    },
+                    {
+                      label: 'Preço sugerido',
+                      data: forecastQtySuggested,
+                      borderColor: '#2dd4bf',
+                      backgroundColor: 'rgba(45, 212, 191, 0.12)',
+                      fill: false,
+                      tension: 0.35
+                    },
+                    {
+                      label: 'Preço escolhido',
+                      data: forecastQtyCustom,
+                      borderColor: '#f97316',
+                      backgroundColor: 'rgba(249, 115, 22, 0.12)',
+                      fill: false,
+                      tension: 0.35
+                    }
+                  ]
+                },
+                options: {
+                  interaction: { mode: 'index', intersect: false },
+                  plugins: {
+                    legend: { position: 'bottom' },
+                    tooltip: {
+                      callbacks: {
+                        label: (context) => {
+                          const qty = context.parsed.y;
+                          const revenue = forecastRevenueSeries[context.datasetIndex]?.[context.dataIndex];
+                          const qtyText = `Qtd: ${formatQty(qty)}`;
+                          const revText = revenue === null || revenue === undefined ? 'Receita: —' : `Receita: ${formatMoney(revenue)}`;
+                          return `${context.dataset.label} · ${qtyText} · ${revText}`;
+                        }
+                      }
+                    }
+                  },
+                  scales: {
+                    x: { grid: { display: false } },
+                    y: { grid: { color: 'rgba(148, 163, 184, 0.2)' } }
+                  }
+                }
+              });
+            }
+          </script>
+        {% endif %}
+      {% else %}
+        <div class="empty-state">
+          <h3>Pronto para analisar</h3>
+          <p>Selecione um produto e lojas para gerar as previsões com o modelo de elasticidade.</p>
+        </div>
+      {% endif %}
+    </section>
+  </main>
+
+  <script type="application/json" id="productsData">
+    {{ products | tojson }}
+  </script>
+  <script>
+    const productsDataEl = document.getElementById('productsData');
+    const products = productsDataEl ? JSON.parse(productsDataEl.textContent) : [];
+    const productInput = document.getElementById('productInput');
+    const productCode = document.getElementById('productCode');
+    const analyzeForm = document.getElementById('analyzeForm');
+
+    const normalize = (value) => (value || '').toString().toLowerCase().trim();
+
+    const findProductCode = (value) => {
+      const raw = (value || '').toString().trim();
+      if (!raw) return '';
+
+      const direct = products.find((p) => String(p.codigoint) === raw);
+      if (direct) return String(direct.codigoint);
+
+      const match = raw.match(/\(([^)]+)\)\s*$/);
+      if (match) return match[1].trim();
+
+      const norm = normalize(raw);
+      const exactLabel = products.find(
+        (p) => normalize(`${p.descricao} (${p.codigoint})`) === norm
+      );
+      if (exactLabel) return String(exactLabel.codigoint);
+
+      const exactDesc = products.find((p) => normalize(p.descricao) === norm);
+      if (exactDesc) return String(exactDesc.codigoint);
+
+      return '';
+    };
+
+    const updateProductCode = () => {
+      if (!productInput || !productCode) return;
+      productCode.value = findProductCode(productInput.value);
+    };
+
+    productInput?.addEventListener('input', updateProductCode);
+    productInput?.addEventListener('change', updateProductCode);
+
+    analyzeForm?.addEventListener('submit', (event) => {
+      updateProductCode();
+      if (!productCode.value) {
+        event.preventDefault();
+        alert('Selecione um produto válido na lista.');
+      }
+    });
+
+    if (productCode?.value && productInput && !productInput.value) {
+      const found = products.find(
+        (p) => String(p.codigoint) === String(productCode.value)
+      );
+      if (found) {
+        productInput.value = `${found.descricao} (${found.codigoint})`;
+      }
+    }
+  </script>
+</body>
+</html>
